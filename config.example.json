@@ -6,13 +6,13 @@
             "url": "http://localhost:3000",
             "bots": [
                 {
-                    "name": "hamoun_1",
+                    "name": "greedy_1",
                     "aggressiveness": 0.8,
                     "splitWillingness": 0.6,
                     "cowardice": 0.2
                 },
                 {
-                    "name": "zbabelec_1",
+                    "name": "coward_1",
                     "aggressiveness": 0.2,
                     "splitWillingness": 0.1,
                     "cowardice": 0.9

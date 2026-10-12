@@ -16,17 +16,24 @@ See [`PLAN.md`](./PLAN.md) for the full design.
 
 ## Status
 
-Pre-0.1. Milestones 1 (lifecycle) and 2 (movement + feeding) are in
-place: bots connect, subscribe, respawn, reconnect with backoff,
-announce themselves in chat, and actively chase the closest food
-pellet. When no food is in range they `WANDER` toward a random
-point inside the world. States `HUNT`/`FLEE`/`SPLIT_ATTACK` are
-declared but not yet wired to decisions; combat lands in milestone 3.
+Pre-0.1. Milestones 1 (lifecycle), 2 (movement + feeding), and
+3 (combat + personality) are in place. The full state machine is
+live: bots `FLEE` from threats, `HUNT` smaller prey, and may enter
+`SPLIT_ATTACK` to close the gap when the maths work out. All
+three personality knobs are wired, with hysteresis on the FLEE
+entry so bots don't flap on the knife-edge of the flee radius.
+
+Milestones 4 (hardening the reconnect/respawn edge cases + multi-
+remote polish) and 5 (release) are still ahead.
 
 Bot names must match the protocol-1.0 name regex
 `/^[\p{L}\p{N}_]{1,25}$/u` (letters, digits, underscore; no
 hyphens or spaces); the config loader rejects anything else at
 startup so bots never run into a silent subscribe-reject loop.
+
+Set `GAME_BOTS_LOG_STATES=1` to log every state transition to
+stdout; useful for debugging a specific bot's decision flow
+without rebuilding.
 
 ## Running
 
