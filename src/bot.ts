@@ -101,11 +101,6 @@ export class Bot {
      *  server (TCP accepts, never responds) pins us in CONNECTING
      *  forever and the backoff never fires. */
     private welcomeTimeout: NodeJS.Timeout | null = null;
-    /** Timestamp of the last respawn request. The server treats
-     *  respawn non-idempotently (tears down the current player and
-     *  spawns a fresh one), so re-firing is a retry mechanism, not
-     *  a per-tick signal. Rate-limited to once per second. */
-    private lastRespawnAt = 0;
     /** Whether we already announced ourselves on this session.
      *  Resets on disconnect so each new session says hello again. */
     private announcedThisSession = false;
@@ -151,9 +146,6 @@ export class Bot {
             this.setState('DISCONNECTED');
         } else if (!this.welcome || !world) {
             this.setState('CONNECTING');
-        } else if (this.state === 'DEAD') {
-            // Stays in DEAD until the server welcomes us back
-            // with a non-null Tick.self.
         } else if (this.isInvulnerable()) {
             this.setState('SPAWNING');
         } else {
@@ -275,7 +267,6 @@ export class Bot {
         this.announcedThisSession = false;
         this.invulnUntil = 0;
         this.wanderMemory = newWanderMemory();
-        this.lastRespawnAt = 0;
         // Clear the DEAD latch so a dropped socket during the DEAD
         // window doesn't permanently freeze the ladder on the new
         // session. Without this, if we die, lose the socket before
@@ -335,20 +326,23 @@ export class Bot {
             case 'tick':
                 this.latestTick = e.payload;
                 this.readInvulnFromTick(e.payload);
-                // A Tick with a non-null self after `died` means
-                // the server has respawned us. Clear the DEAD latch
-                // so the transition ladder picks SPAWNING/FEED next.
-                if (this.state === 'DEAD' && e.payload.self) {
-                    this.setState('SPAWNING');
-                }
                 break;
             case 'kick':
                 console.warn(`[bot ${this.name}] kicked: ${e.payload.reason}`);
                 this.scheduleReconnect();
                 break;
             case 'died':
+                // Server nulls record.player as soon as a player is
+                // eaten, and its respawn handler short-circuits when
+                // record.player is null. So `respawn` is effectively
+                // dead code for a bot that was already eaten; the web
+                // client itself handles death by returning to the
+                // lobby and reconnecting. Mirror that: drop the socket
+                // and let the reconnect ladder bring us back as a
+                // fresh subscribe.
+                console.log(`[bot ${this.name}] died, reconnecting for respawn`);
                 this.setState('DEAD');
-                this.sendRespawnOnce();
+                this.scheduleReconnect();
                 break;
             case 'message':
                 // No-op in milestone 1. Metrics sink can grow a
@@ -409,19 +403,6 @@ export class Bot {
     // ---------------------------------------------------------------
     // Chat
     // ---------------------------------------------------------------
-
-    /** Rate-limited respawn send. The server is non-idempotent on
-     *  respawn (every call tears down and spawns a fresh player),
-     *  so re-firing serves as a retry when a frame got lost, not
-     *  as a per-tick signal. One second between attempts is
-     *  comfortably longer than a normal spawn ack. */
-    private sendRespawnOnce(): void {
-        if (!this.connection) return;
-        const now = Date.now();
-        if (now - this.lastRespawnAt < 1000) return;
-        this.lastRespawnAt = now;
-        this.connection.sendRespawn();
-    }
 
     private maybeAnnounce(): void {
         if (this.announcedThisSession || !this.connection) return;
@@ -541,15 +522,11 @@ export class Bot {
                 // heuristic earns its keep.
                 offset = steerForWander(world, this.wanderMemory, world.time);
                 break;
-            case 'DEAD':
-                // Retry the respawn once a second if the server
-                // never acknowledged. Server tears down and
-                // respawns on each call, so we must NOT re-send
-                // every tick, only occasionally if we're stranded.
-                this.sendRespawnOnce();
-                break;
             default:
-                // DISCONNECTED, CONNECTING: nothing to steer.
+                // DISCONNECTED, CONNECTING, DEAD: nothing to send.
+                // DEAD is a brief latch between `died` and the
+                // scheduled reconnect; emitActions runs between
+                // the two but has nothing useful to do.
                 break;
         }
         this.connection.sendSteer(offset);

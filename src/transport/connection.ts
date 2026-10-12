@@ -22,7 +22,7 @@ import {
 /** User-agent string sent on subscribe. Static for v0.1; a later
  *  version can resolve this from package.json at module load like
  *  cells-mcp does. */
-export const GAME_BOTS_USER_AGENT = 'game-bots/0.1.1';
+export const GAME_BOTS_USER_AGENT = 'game-bots/0.1.2';
 
 /** Default capability set every bot requests. The chat capability
  *  is in here so milestone 1 can send the join announcement
