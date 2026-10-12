@@ -54,6 +54,7 @@ import {
     nonCowardFleeRadius,
     pursuitRange
 } from './decisions/personality.js';
+import { shouldRegroup, steerForRegroup } from './decisions/regroup.js';
 
 /** Backoff ladder for reconnection attempts after the socket drops
  *  or the server kicks us. Index is clamped to the array length so
@@ -233,13 +234,25 @@ export class Bot {
             return;
         }
 
-        // Step 6: FEED (unchanged).
+        // Step 6: REGROUP. Any outlier cell far from the swarm
+        // centroid makes FEED/WANDER oscillate (the next target
+        // can land between the big cell and the outlier, and we
+        // flip which side we chase each tick). Pulling the swarm
+        // together first makes FEED/WANDER well-behaved on the
+        // next tick. Sits below HUNT/FLEE because an actual
+        // combat opportunity shouldn't wait on cosmetic cohesion.
+        if (shouldRegroup(world, this.state === 'REGROUP')) {
+            this.setState('REGROUP');
+            return;
+        }
+
+        // Step 7: FEED.
         if (canFeed(world)) {
             this.setState('FEED');
             return;
         }
 
-        // Step 7: WANDER fallback.
+        // Step 8: WANDER fallback.
         this.setState('WANDER');
     }
 
@@ -452,6 +465,7 @@ export class Bot {
             case 'HUNT':          return 'steer-hunt';
             case 'FLEE':          return 'steer-flee';
             case 'SPLIT_ATTACK':  return 'split-attack';
+            case 'REGROUP':       return 'steer-regroup';
         }
     }
 
@@ -518,6 +532,12 @@ export class Bot {
             }
             case 'FEED':
                 offset = steerForFeed(world) ?? offset;
+                break;
+            case 'REGROUP':
+                // Zero offset: via the server's per-cell movement
+                // math this resolves to "each cell heads toward
+                // the player centroid," which converges the swarm.
+                offset = steerForRegroup(world);
                 break;
             case 'WANDER':
             case 'SPAWNING':

@@ -12,4 +12,5 @@ export type BotState =
     | 'FEED'
     | 'HUNT'
     | 'FLEE'
-    | 'SPLIT_ATTACK';
+    | 'SPLIT_ATTACK'
+    | 'REGROUP';

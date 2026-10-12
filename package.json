@@ -1,6 +1,6 @@
 {
   "name": "@cellagents/game-bots",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Headless deterministic bots that play cells-game over @cellagents/game-protocol",
   "license": "MIT",
