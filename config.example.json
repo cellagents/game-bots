@@ -1,0 +1,23 @@
+{
+    "heartbeatMs": 100,
+    "remotes": [
+        {
+            "name": "local",
+            "url": "http://localhost:3000",
+            "bots": [
+                {
+                    "name": "greedy-1",
+                    "aggressiveness": 0.8,
+                    "splitWillingness": 0.6,
+                    "cowardice": 0.2
+                },
+                {
+                    "name": "turtle-1",
+                    "aggressiveness": 0.2,
+                    "splitWillingness": 0.1,
+                    "cowardice": 0.9
+                }
+            ]
+        }
+    ]
+}

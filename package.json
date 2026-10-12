@@ -1,0 +1,29 @@
+{
+  "name": "@cellagents/game-bots",
+  "version": "0.1.0-pre",
+  "private": true,
+  "description": "Headless deterministic bots that play cells-game over @cellagents/game-protocol",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "start": "npm run build && node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@cellagents/game-protocol": "github:cellagents/game-protocol#v1.0.1",
+    "socket.io-client": "~4.8.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
