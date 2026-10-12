@@ -2,14 +2,11 @@
 // the latest world snapshot, runs its own decision loop on each
 // scheduler tick, and emits actions through the connection.
 //
-// Milestone 1 is the lifecycle skeleton: states DISCONNECTED →
-// CONNECTING → SPAWNING → WANDER (idle, no steering). On kick or
-// socket drop the bot goes back to DISCONNECTED and reconnects
-// with exponential backoff. On died it respawns. Chat join
-// announcement fires once per welcome.
-//
-// Movement, prey/threat decisions, and SPLIT_ATTACK land in later
-// milestones.
+// Milestone 2 scope: states DISCONNECTED → CONNECTING → SPAWNING
+// (drifts) → DEAD (respawn) and the two alive branches we care
+// about so far, FEED and WANDER. HUNT/FLEE/SPLIT_ATTACK are
+// declared in the state enum but still fall through to WANDER
+// until milestone 3 wires combat.
 
 import { randomUUID } from 'node:crypto';
 import type { BotConfig } from './config.js';
@@ -18,6 +15,14 @@ import type { ConnectionEvent } from './transport/connection.js';
 import type { BotState } from './states/index.js';
 import { recordMetric } from './metrics.js';
 import type { Tick, Welcome } from '@cellagents/game-protocol/wire';
+import { projectTick, type WorldView } from './decisions/world.js';
+import {
+    canFeed,
+    newWanderMemory,
+    steerForFeed,
+    steerForWander,
+    type WanderMemory
+} from './decisions/feed.js';
 
 /** Backoff ladder for reconnection attempts after the socket drops
  *  or the server kicks us. Index is clamped to the array length so
@@ -60,6 +65,10 @@ export class Bot {
     /** True once stop() has been called; blocks any further
      *  reconnect attempts. */
     private shutdown = false;
+    /** Persistent memory for WANDER so the bot pursues a single
+     *  target for several ticks instead of jittering. Reset on
+     *  each new session. */
+    private wanderMemory: WanderMemory = newWanderMemory();
 
     constructor(private readonly opts: BotRuntimeOptions) {
         this.name = opts.config.name;
@@ -72,26 +81,32 @@ export class Bot {
         this.openConnection();
     }
 
-    /** Called by the scheduler on each heartbeat tick. Runs the
-     *  state-transition ladder, then dispatches state-specific
-     *  behaviour. Milestone 1: lifecycle only, no steering. */
+    /** Called by the scheduler on each heartbeat tick. Projects
+     *  the latest Tick, runs the state-transition ladder, emits a
+     *  steer offset, and reports a metric sample. */
     tick(): void {
         this.evaluateInvuln();
 
-        // Transition ladder. The lifecycle branches are the only
-        // ones wired in milestone 1; FLEE/HUNT/FEED/WANDER
-        // discrimination arrives in milestones 2 and 3.
+        const world = this.projectWorld();
+
+        // Transition ladder. HUNT/FLEE/SPLIT_ATTACK are declared
+        // but not emitted until milestone 3 lands combat.
         if (!this.connection) {
             this.setState('DISCONNECTED');
-        } else if (!this.welcome) {
+        } else if (!this.welcome || !world) {
             this.setState('CONNECTING');
         } else if (this.state === 'DEAD') {
-            // Stays in DEAD until the server welcomes us back.
+            // Stays in DEAD until the server welcomes us back
+            // with a non-null Tick.self.
         } else if (this.isInvulnerable()) {
             this.setState('SPAWNING');
+        } else if (canFeed(world)) {
+            this.setState('FEED');
         } else {
             this.setState('WANDER');
         }
+
+        this.emitSteerForState(world);
 
         recordMetric({
             time: Date.now(),
@@ -126,6 +141,7 @@ export class Bot {
         this.latestTick = null;
         this.announcedThisSession = false;
         this.invulnUntil = 0;
+        this.wanderMemory = newWanderMemory();
         const conn = new Connection({
             url: this.opts.remoteUrl,
             name: this.name,
@@ -153,6 +169,12 @@ export class Bot {
             case 'tick':
                 this.latestTick = e.payload;
                 this.readInvulnFromTick(e.payload);
+                // A Tick with a non-null self after `died` means
+                // the server has respawned us. Clear the DEAD latch
+                // so the transition ladder picks SPAWNING/FEED next.
+                if (this.state === 'DEAD' && e.payload.self) {
+                    this.setState('SPAWNING');
+                }
                 break;
             case 'kick':
                 console.warn(`[bot ${this.name}] kicked: ${e.payload.reason}`);
@@ -256,12 +278,45 @@ export class Bot {
 
     private decisionTag(): string {
         switch (this.state) {
-            case 'DISCONNECTED': return 'reconnect';
-            case 'CONNECTING':   return 'awaiting-welcome';
-            case 'SPAWNING':     return 'invuln-wait';
-            case 'DEAD':         return 'respawn-pending';
+            case 'DISCONNECTED':  return 'reconnect';
+            case 'CONNECTING':    return 'awaiting-welcome';
+            case 'SPAWNING':      return 'invuln-wait';
+            case 'DEAD':          return 'respawn-pending';
+            case 'FEED':          return 'steer-feed';
+            case 'WANDER':        return 'steer-wander';
             default:              return 'idle';
         }
+    }
+
+    private projectWorld(): WorldView | null {
+        if (!this.latestTick || !this.welcome) return null;
+        return projectTick(this.latestTick, this.welcome.world);
+    }
+
+    /** Translate the current state into a steer offset and push it
+     *  down the wire. States that have no useful heading (lifecycle
+     *  branches, SPAWNING with no world yet) emit the zero vector
+     *  so the server knows the bot is still alive but drifting. */
+    private emitSteerForState(world: WorldView | null): void {
+        if (!this.connection) return;
+        if (!world) {
+            // No tick yet (CONNECTING) or no self (DEAD). Nothing
+            // sensible to steer toward; the server tolerates a
+            // zero vector as "no change in heading".
+            this.connection.sendSteer({ x: 0, y: 0 });
+            return;
+        }
+        let offset = { x: 0, y: 0 };
+        if (this.state === 'FEED') {
+            offset = steerForFeed(world) ?? offset;
+        } else if (this.state === 'WANDER' || this.state === 'SPAWNING') {
+            // SPAWNING drifts under the wander policy: the invuln
+            // bot wants to put distance between itself and threats,
+            // and the random target drift serves that fine until
+            // milestone 3 adds "away from nearest threat" biasing.
+            offset = steerForWander(world, this.wanderMemory, world.time);
+        }
+        this.connection.sendSteer(offset);
     }
 }
 

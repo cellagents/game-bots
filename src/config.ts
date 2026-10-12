@@ -99,6 +99,12 @@ function validateRemote(raw: unknown, source: string, i: number): RemoteConfig {
     return { name: raw.name, url: raw.url, bots };
 }
 
+/** Protocol 1.0 player-name regex: letters, digits, underscores,
+ *  1..25 chars. Matches the server's NameSchema; validating here
+ *  turns a silent reject-loop (every subscribe gets INVALID_NAME,
+ *  bot never joins) into a loud startup error. */
+const NAME_REGEX = /^[\p{L}\p{N}_]{1,25}$/u;
+
 function validateBot(raw: unknown, source: string, where: string): BotConfig {
     if (!isPlainObject(raw)) {
         throw new Error(`Config at ${source} ${where} must be an object`);
@@ -106,6 +112,13 @@ function validateBot(raw: unknown, source: string, where: string): BotConfig {
     rejectUnknown(raw, BOT_KEYS, source, where);
     if (typeof raw.name !== 'string' || raw.name.length === 0) {
         throw new Error(`Config at ${source} ${where}.name must be a non-empty string`);
+    }
+    if (!NAME_REGEX.test(raw.name)) {
+        throw new Error(
+            `Config at ${source} ${where}.name = '${raw.name}' is invalid: `
+            + 'protocol 1.0 names must match /^[\\p{L}\\p{N}_]{1,25}$/u '
+            + '(letters, digits, underscore; no hyphens or spaces)'
+        );
     }
     const bot: BotConfig = {
         name: raw.name,

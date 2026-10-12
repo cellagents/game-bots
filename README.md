@@ -16,10 +16,17 @@ See [`PLAN.md`](./PLAN.md) for the full design.
 
 ## Status
 
-Pre-0.1. Milestone 1 (scaffold + lifecycle: connect, subscribe,
-respawn, reconnect, chat join announcement) is in place. States
-`WANDER`/`FEED`/`HUNT`/`FLEE`/`SPLIT_ATTACK` are declared but not
-yet wired to decisions; the bot currently stands still and drifts.
+Pre-0.1. Milestones 1 (lifecycle) and 2 (movement + feeding) are in
+place: bots connect, subscribe, respawn, reconnect with backoff,
+announce themselves in chat, and actively chase the closest food
+pellet. When no food is in range they `WANDER` toward a random
+point inside the world. States `HUNT`/`FLEE`/`SPLIT_ATTACK` are
+declared but not yet wired to decisions; combat lands in milestone 3.
+
+Bot names must match the protocol-1.0 name regex
+`/^[\p{L}\p{N}_]{1,25}$/u` (letters, digits, underscore; no
+hyphens or spaces); the config loader rejects anything else at
+startup so bots never run into a silent subscribe-reject loop.
 
 ## Running
 
