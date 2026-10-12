@@ -22,7 +22,7 @@ import {
 /** User-agent string sent on subscribe. Static for v0.1; a later
  *  version can resolve this from package.json at module load like
  *  cells-mcp does. */
-export const GAME_BOTS_USER_AGENT = 'game-bots/0.1.2';
+export const GAME_BOTS_USER_AGENT = 'game-bots/0.1.3';
 
 /** Default capability set every bot requests. The chat capability
  *  is in here so milestone 1 can send the join announcement
@@ -155,7 +155,22 @@ export class Connection {
         });
     }
 
-    disconnect(): void {
+    /** Detach the listener and all socket.io handlers, then close
+     *  the socket. After this call the Connection is inert: any
+     *  late events the transport fires on its way down (socket.io
+     *  queues 'disconnect' after `disconnect()` and may emit server
+     *  events still in flight) are dropped on the floor rather than
+     *  cascading into the Bot's state machine.
+     *
+     *  Without this, the stale listener on a reconnect's old
+     *  Connection stays armed: when the dying socket finally emits
+     *  'disconnect' seconds later, the handler calls
+     *  scheduleReconnect() a SECOND time, closing the freshly-
+     *  established new session and triggering a chain of parallel
+     *  disconnect/reconnect cycles for the same bot. */
+    close(): void {
+        this.listener = null;
+        this.socket.removeAllListeners();
         this.socket.disconnect();
     }
 }

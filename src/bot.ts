@@ -251,7 +251,7 @@ export class Bot {
         }
         this.clearWelcomeTimeout();
         if (this.connection) {
-            this.connection.disconnect();
+            this.connection.close();
             this.connection = null;
         }
     }
@@ -363,7 +363,12 @@ export class Bot {
         if (this.shutdown || this.reconnectTimer) return;
         this.clearWelcomeTimeout();
         if (this.connection) {
-            this.connection.disconnect();
+            // close() detaches the listener BEFORE disconnecting
+            // the socket, so the queued transport-close event that
+            // socket.io fires on its way down can't cascade back
+            // into another scheduleReconnect() call against the
+            // next session.
+            this.connection.close();
             this.connection = null;
         }
         this.welcome = null;
