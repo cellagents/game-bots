@@ -15,7 +15,8 @@ import {
     type Reject,
     type Tick,
     type Kick,
-    type Message
+    type Message,
+    type Rules
 } from '@cellagents/game-protocol/wire';
 
 /** User-agent string sent on subscribe. Milestone 1 pins a static
@@ -35,6 +36,8 @@ export type ConnectionEvent =
     | { kind: 'kick'; payload: Kick }
     | { kind: 'died' }
     | { kind: 'message'; payload: Message }
+    | { kind: 'rulesChanged'; rules: Rules }
+    | { kind: 'actionsChanged'; actions: string[] }
     | { kind: 'disconnect'; reason: string }
     | { kind: 'connect_error'; error: Error };
 
@@ -101,6 +104,18 @@ export class Connection {
 
         this.socket.on(ServerEvent.message, (payload: Message) => {
             this.emit({ kind: 'message', payload });
+        });
+
+        this.socket.on(ServerEvent.rulesChanged, (payload: { rules: Rules }) => {
+            if (payload && payload.rules && typeof payload.rules === 'object') {
+                this.emit({ kind: 'rulesChanged', rules: payload.rules });
+            }
+        });
+
+        this.socket.on(ServerEvent.actionsChanged, (payload: { actions: string[] }) => {
+            if (payload && Array.isArray(payload.actions)) {
+                this.emit({ kind: 'actionsChanged', actions: payload.actions });
+            }
         });
 
         this.socket.on('disconnect', (reason: string) => {

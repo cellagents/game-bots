@@ -64,6 +64,12 @@ const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000];
  *  need to be tuned per deployment; it just sets the upper bound on
  *  what we can perceive. */
 const DEFAULT_SCREEN = { width: 1920, height: 1080 };
+/** How long to wait for a welcome after socket connect before
+ *  giving up and reconnecting. A healthy server welcomes in well
+ *  under a second; 5 s catches a server that TCP-accepts but
+ *  never sends the handshake (process stuck on startup, bad
+ *  config, etc). */
+const WELCOME_TIMEOUT_MS = 5000;
 
 export interface BotRuntimeOptions {
     remoteName: string;
@@ -90,6 +96,16 @@ export class Bot {
     private reconnectAttempt = 0;
     /** Pending reconnect timer, so we don't schedule two in flight. */
     private reconnectTimer: NodeJS.Timeout | null = null;
+    /** Fires if no welcome arrives after socket connect. Cleared on
+     *  welcome or on scheduleReconnect. Without this a stalled
+     *  server (TCP accepts, never responds) pins us in CONNECTING
+     *  forever and the backoff never fires. */
+    private welcomeTimeout: NodeJS.Timeout | null = null;
+    /** Timestamp of the last respawn request. The server treats
+     *  respawn non-idempotently (tears down the current player and
+     *  spawns a fresh one), so re-firing is a retry mechanism, not
+     *  a per-tick signal. Rate-limited to once per second. */
+    private lastRespawnAt = 0;
     /** Whether we already announced ourselves on this session.
      *  Resets on disconnect so each new session says hello again. */
     private announcedThisSession = false;
@@ -241,6 +257,7 @@ export class Bot {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+        this.clearWelcomeTimeout();
         if (this.connection) {
             this.connection.disconnect();
             this.connection = null;
@@ -258,6 +275,14 @@ export class Bot {
         this.announcedThisSession = false;
         this.invulnUntil = 0;
         this.wanderMemory = newWanderMemory();
+        this.lastRespawnAt = 0;
+        // Clear the DEAD latch so a dropped socket during the DEAD
+        // window doesn't permanently freeze the ladder on the new
+        // session. Without this, if we die, lose the socket before
+        // the respawn Tick, reconnect, and get a Welcome, the
+        // ladder would short-circuit on this.state === 'DEAD' and
+        // never advance.
+        this.setState('CONNECTING');
         const conn = new Connection({
             url: this.opts.remoteUrl,
             name: this.name,
@@ -266,7 +291,25 @@ export class Bot {
         });
         conn.on((e) => this.handleConnectionEvent(e));
         this.connection = conn;
-        this.setState('CONNECTING');
+        this.armWelcomeTimeout();
+    }
+
+    private armWelcomeTimeout(): void {
+        this.clearWelcomeTimeout();
+        this.welcomeTimeout = setTimeout(() => {
+            this.welcomeTimeout = null;
+            if (this.welcome) return;
+            console.warn(`[bot ${this.name}] no welcome in ${WELCOME_TIMEOUT_MS}ms, reconnecting`);
+            this.scheduleReconnect();
+        }, WELCOME_TIMEOUT_MS);
+        this.welcomeTimeout.unref?.();
+    }
+
+    private clearWelcomeTimeout(): void {
+        if (this.welcomeTimeout) {
+            clearTimeout(this.welcomeTimeout);
+            this.welcomeTimeout = null;
+        }
     }
 
     private handleConnectionEvent(e: ConnectionEvent): void {
@@ -274,9 +317,16 @@ export class Bot {
             case 'welcome':
                 this.welcome = e.payload;
                 this.reconnectAttempt = 0;
+                this.clearWelcomeTimeout();
                 // Welcome.self carries only id/name/hue; the
                 // invuln effect arrives on the first Tick.
                 this.maybeAnnounce();
+                break;
+            case 'rulesChanged':
+                if (this.welcome) this.welcome.rules = e.rules;
+                break;
+            case 'actionsChanged':
+                if (this.welcome) this.welcome.actions = e.actions;
                 break;
             case 'reject':
                 console.warn(`[bot ${this.name}] subscribe rejected: ${e.payload.code} ${e.payload.message}`);
@@ -298,11 +348,7 @@ export class Bot {
                 break;
             case 'died':
                 this.setState('DEAD');
-                // Milestone 1: ask for respawn immediately on next
-                // tick. Later milestones might delay (e.g. observe
-                // the room first), but indefinite play is the stated
-                // behaviour.
-                if (this.connection) this.connection.sendRespawn();
+                this.sendRespawnOnce();
                 break;
             case 'message':
                 // No-op in milestone 1. Metrics sink can grow a
@@ -321,6 +367,7 @@ export class Bot {
 
     private scheduleReconnect(): void {
         if (this.shutdown || this.reconnectTimer) return;
+        this.clearWelcomeTimeout();
         if (this.connection) {
             this.connection.disconnect();
             this.connection = null;
@@ -362,6 +409,19 @@ export class Bot {
     // ---------------------------------------------------------------
     // Chat
     // ---------------------------------------------------------------
+
+    /** Rate-limited respawn send. The server is non-idempotent on
+     *  respawn (every call tears down and spawns a fresh player),
+     *  so re-firing serves as a retry when a frame got lost, not
+     *  as a per-tick signal. One second between attempts is
+     *  comfortably longer than a normal spawn ack. */
+    private sendRespawnOnce(): void {
+        if (!this.connection) return;
+        const now = Date.now();
+        if (now - this.lastRespawnAt < 1000) return;
+        this.lastRespawnAt = now;
+        this.connection.sendRespawn();
+    }
 
     private maybeAnnounce(): void {
         if (this.announcedThisSession || !this.connection) return;
@@ -481,19 +541,21 @@ export class Bot {
                 // heuristic earns its keep.
                 offset = steerForWander(world, this.wanderMemory, world.time);
                 break;
+            case 'DEAD':
+                // Retry the respawn once a second if the server
+                // never acknowledged. Server tears down and
+                // respawns on each call, so we must NOT re-send
+                // every tick, only occasionally if we're stranded.
+                this.sendRespawnOnce();
+                break;
             default:
-                // DISCONNECTED, CONNECTING, DEAD: nothing to steer.
+                // DISCONNECTED, CONNECTING: nothing to steer.
                 break;
         }
         this.connection.sendSteer(offset);
     }
 }
 
-/** Pull the `invulnerable` effect's `until` deadline out of an
- *  effects list. Returns the ms timestamp when invuln expires, or
- *  null when there is no invuln effect in the list (i.e. the server
- *  did not say anything about it on this frame; keep the previous
- *  value). */
 /** Read the server-advertised split cap from the rules bag.
  *  Falls back to a conservative 16 (the 1.0 cells-game default)
  *  when the rules key is missing. */
@@ -504,6 +566,11 @@ function readSplitLimit(rules: { [k: string]: unknown } | null): number {
     return 16;
 }
 
+/** Pull the `invulnerable` effect's `until` deadline out of an
+ *  effects list. Returns the ms timestamp when invuln expires, or
+ *  null when there is no invuln effect in the list (i.e. the server
+ *  did not say anything about it on this frame; keep the previous
+ *  value). */
 function extractInvulnDeadline(effects: unknown): number | null {
     if (!Array.isArray(effects)) return null;
     for (const eff of effects) {
