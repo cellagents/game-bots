@@ -67,15 +67,20 @@ interaction summary between the three knobs.
   tune individuals, and server-side admin audits stay identifiable
   by bot name.
 
-The loader searches, in order: `$GAME_BOTS_CONFIG`,
-`./config.json`, `./config.example.json`. The first file that
-exists wins; `config.json` is gitignored. The following env vars
-override individual settings without editing the file:
+The loader resolves config in this order; the first match wins:
 
-| Variable                | Overrides                                                      |
-|-------------------------|----------------------------------------------------------------|
-| `GAME_BOTS_CONFIG`      | absolute path to an alternate config file                      |
-| `GAME_BOTS_LOG_STATES`  | set to `1` to log every bot state transition to stdout         |
+1. `$GAME_BOTS_INLINE_CONFIG`: the raw JSON above as a string.
+   Convenient in `docker-compose.yml` where a stray config file in
+   the image shouldn't mask the deployment roster.
+2. `$GAME_BOTS_CONFIG`: absolute path to an alternate config file.
+3. `./config.json`: user-managed, gitignored.
+4. `./config.example.json`: checked-in defaults.
+
+| Variable                   | Overrides                                                   |
+|----------------------------|-------------------------------------------------------------|
+| `GAME_BOTS_INLINE_CONFIG`  | the entire config, as a JSON string                         |
+| `GAME_BOTS_CONFIG`         | absolute path to an alternate config file                   |
+| `GAME_BOTS_LOG_STATES`     | set to `1` to log every bot state transition to stdout      |
 
 ## Technical overview
 

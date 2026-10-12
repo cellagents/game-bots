@@ -1,10 +1,14 @@
-// Config loader. Reads a JSON file from one of several candidate
-// paths, validates the shape, and clamps the per-bot personality
-// knobs into [0, 1]. Candidate order (first that exists wins):
+// Config loader. Resolves the config in this order:
 //
-//   1. $GAME_BOTS_CONFIG                 explicit override
-//   2. <repo-root>/config.json           user-managed, gitignored
-//   3. <repo-root>/config.example.json   checked-in defaults
+//   1. $GAME_BOTS_INLINE_CONFIG          raw JSON string in env
+//   2. $GAME_BOTS_CONFIG                 absolute path override
+//   3. <repo-root>/config.json           user-managed, gitignored
+//   4. <repo-root>/config.example.json   checked-in defaults
+//
+// Inline wins over file path on purpose: a docker-compose author
+// embedding the roster in the compose file does not want a stray
+// config.json in the image to mask it. Validates the shape and
+// clamps the per-bot personality knobs into [0, 1].
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,6 +38,20 @@ const REMOTE_KEYS = new Set<string>(['name', 'url', 'bots']);
 const ROOT_KEYS = new Set<string>(['heartbeatMs', 'remotes']);
 
 export function loadConfig(): Config {
+    const inline = process.env.GAME_BOTS_INLINE_CONFIG;
+    if (inline !== undefined && inline !== '') {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(inline);
+        } catch (err) {
+            throw new Error(
+                '$GAME_BOTS_INLINE_CONFIG is not valid JSON: '
+                + (err instanceof Error ? err.message : String(err))
+            );
+        }
+        return validate(parsed, '$GAME_BOTS_INLINE_CONFIG');
+    }
+
     // src/config.ts → dist/config.js; repo root is one dir up.
     const here = path.dirname(fileURLToPath(import.meta.url));
     const repoRoot = path.resolve(here, '..');
@@ -55,7 +73,8 @@ export function loadConfig(): Config {
     }
     if (!raw) {
         throw new Error(
-            'No game-bots config file found; set GAME_BOTS_CONFIG or create config.json / config.example.json'
+            'No game-bots config found; set GAME_BOTS_INLINE_CONFIG, '
+            + 'set GAME_BOTS_CONFIG, or create config.json / config.example.json'
         );
     }
     return validate(raw, source!);
